@@ -91,14 +91,15 @@ Bu dosya, Yüz Bulanıklaştırma Uygulaması için planlanan ve önerilebilecek
 ## 📱 Platform ve Dağıtım
 
 ### 11. Çalıştırılabilir Dosya (Build & Deploy)
-- [x] Windows: `.exe` oluşturma (PyInstaller ve `build_exe.ps1` hazır ✅)
-- [ ] Windows: Installer (`setup.exe`) hazırlama (Inno Setup)
-- [x] GitHub Actions: Otomatik build sistemini kurma (build.yml hazır ✅)
+- [x] Windows: `Yüz Bulanıklaştırma.exe` oluşturma (Logo dahil ✅)
+- [x] Windows: Installer (`setup.exe`) altyapısı (`installer_config.iss` hazır ✅)
+- [x] GitHub Actions: Otomatik build sistemini kurma (İsimler güncellendi ✅)
 
 ### 12. Çapraz Platform Dağıtımı
-- [x] macOS: `.app` paketi oluşturma altyapısı (GitHub Actions ile ✅)
-- [x] Linux: `.AppImage` taşınabilir sürüm altyapısı (GitHub Actions ile ✅)
-- [x] Kullanıcılar için kuruluma gerek kalmayan (Portable) tek dosya sürümü
+- [x] Özel Uygulama Logosu (`app_icon.ico` oluşturuldu ✅)
+- [x] macOS: `.app` paketi (Yüz_Bulanıklaştırma ✅)
+- [x] Linux: `.AppImage` paketi (Yüz_Bulanıklaştırma ✅)
+
 
 
 ---

@@ -77,6 +77,19 @@ class FaceBlurApp(ctk.CTk):
 
         # Uygulama açıldığında ekranı kapla (Maximize)
         self.after(1000, self.maximize_window)
+        
+        # Pencere İkonu
+        try:
+            icon_path = os.path.join(os.path.dirname(__file__), 'app_icon.ico')
+            if os.path.exists(icon_path):
+                if self.system == "Windows":
+                    self.iconbitmap(icon_path)
+                else:
+                    img = ImageTk.PhotoImage(Image.open(icon_path))
+                    self.wm_iconphoto(True, img)
+        except:
+            pass
+
 
     def maximize_window(self):
         """İşletim sistemine göre en uygun ekranı kaplama yöntemi"""

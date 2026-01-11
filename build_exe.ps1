@@ -15,16 +15,19 @@ Write-Host "📦 Bağımlılıklar kontrol ediliyor..." -ForegroundColor Yellow
 
 # PyInstaller ile derle
 Write-Host "🔨 PyInstaller çalıştırılıyor..." -ForegroundColor Yellow
-.\venv_new\Scripts\pyinstaller.exe --noconsole --onefile --name "FaceBlur_v1.0" `
+.\venv_new\Scripts\pyinstaller.exe --noconsole --onefile --name "Yüz Bulanıklaştırma" `
     --add-data "blaze_face_short_range.tflite;." `
     --add-data "haarcascade_frontalface_default.xml;." `
     --collect-all customtkinter `
-    --icon=NONE `
+    --icon="app_icon.ico" `
     main.py
+
+
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "`n✅ Başarılı! Uygulama 'dist' klasöründe oluşturuldu." -ForegroundColor Green
-    Write-Host "📂 Dosya: dist\FaceBlur_v1.0.exe" -ForegroundColor Green
+    Write-Host "📂 Dosya: dist\Yüz Bulanıklaştırma.exe" -ForegroundColor Green
 } else {
+
     Write-Host "`n❌ Derleme sırasında bir hata oluştu." -ForegroundColor Red
 }

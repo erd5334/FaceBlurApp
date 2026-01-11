@@ -48,16 +48,18 @@ jobs:
       - name: Build with PyInstaller (Windows)
         if: runner.os == 'Windows'
         run: |
-          pyinstaller --noconsole --onefile --name FaceBlur `
+          pyinstaller --noconsole --onefile --name "Yüz Bulanıklaştırma" `
           --add-data "blaze_face_short_range.tflite;." `
           --add-data "haarcascade_frontalface_default.xml;." `
           --collect-all customtkinter `
+          --icon="app_icon.ico" `
           main.py
+
 
       - name: Build with PyInstaller (macOS)
         if: runner.os == 'macOS'
         run: |
-          pyinstaller --noconsole --onefile --name FaceBlur \
+          pyinstaller --noconsole --onefile --name "Yüz_Bulanıklaştırma" \
           --add-data "blaze_face_short_range.tflite:." \
           --add-data "haarcascade_frontalface_default.xml:." \
           --collect-all customtkinter \
@@ -66,11 +68,12 @@ jobs:
       - name: Build with PyInstaller (Linux)
         if: runner.os == 'Linux'
         run: |
-          pyinstaller --noconsole --onefile --name FaceBlur \
+          pyinstaller --noconsole --onefile --name "Yüz_Bulanıklaştırma" \
           --add-data "blaze_face_short_range.tflite:." \
           --add-data "haarcascade_frontalface_default.xml:." \
           --collect-all customtkinter \
           main.py
+
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
