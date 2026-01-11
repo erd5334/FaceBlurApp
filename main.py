@@ -16,6 +16,7 @@ import threading
 import json
 import platform
 import io
+import sys
 
 # MediaPipe Tasks API import
 
@@ -80,7 +81,7 @@ class FaceBlurApp(ctk.CTk):
         
         # Pencere İkonu
         try:
-            icon_path = os.path.join(os.path.dirname(__file__), 'app_icon.ico')
+            icon_path = self.get_resource_path('app_icon.ico')
             if os.path.exists(icon_path):
                 if self.system == "Windows":
                     self.iconbitmap(icon_path)
@@ -90,8 +91,17 @@ class FaceBlurApp(ctk.CTk):
         except:
             pass
 
+    def get_resource_path(self, relative_path):
+        """PyInstaller için kaynak dosyaların yolunu çöz (EXE uyumluluğu)"""
+        try:
+            # PyInstaller geçici klasör yolu (_MEIPASS)
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath(".")
+        return os.path.join(base_path, relative_path)
 
     def maximize_window(self):
+
         """İşletim sistemine göre en uygun ekranı kaplama yöntemi"""
         try:
             if self.system == "Windows":
@@ -170,15 +180,15 @@ class FaceBlurApp(ctk.CTk):
         # MediaPipe Face Detection (Tasks API)
         if MEDIAPIPE_AVAILABLE:
             try:
-                # Model dosyasının yolu
-                model_path = os.path.join(os.path.dirname(__file__), 'blaze_face_short_range.tflite')
+                # Model dosyasının yolu (EXE uyumlu)
+                model_path = self.get_resource_path('blaze_face_short_range.tflite')
                 
                 if os.path.exists(model_path):
                     base_options = python.BaseOptions(model_asset_path=model_path)
                     options = vision.FaceDetectorOptions(
                         base_options=base_options,
-                        min_detection_confidence=0.4,  # Çok hassas algılama
-                        min_suppression_threshold=0.3   # Daha az NMS filtreleme
+                        min_detection_confidence=0.4,
+                        min_suppression_threshold=0.3
                     )
                     self.face_detector = vision.FaceDetector.create_from_options(options)
                     print("MediaPipe yüz algılama hazır.")
@@ -192,8 +202,8 @@ class FaceBlurApp(ctk.CTk):
         # OpenCV Haar Cascade (yedek olarak)
         self.profile_cascade = None
         try:
-            # Önce frontal cascade yükle
-            local_cascade = os.path.join(os.path.dirname(__file__), 'haarcascade_frontalface_default.xml')
+            # Önce frontal cascade yükle (EXE uyumlu)
+            local_cascade = self.get_resource_path('haarcascade_frontalface_default.xml')
             if not os.path.exists(local_cascade):
                 # Eğer yerelde yoksa cv2 içinden dene
                 local_cascade = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
@@ -214,6 +224,7 @@ class FaceBlurApp(ctk.CTk):
             print(f"Cascade yükleme hatası: {e}")
             self.face_cascade = None
             self.profile_cascade = None
+
 
     
     def bind_keyboard_shortcuts(self):
@@ -2398,7 +2409,10 @@ class FaceBlurApp(ctk.CTk):
                     y1 = int(max(0, bbox.origin_y) / scale)
                     x2 = int(min(orig_w, (bbox.origin_x + bbox.width) / scale))
                     y2 = int(min(orig_h, (bbox.origin_y + bbox.height) / scale))
-                    mp_faces.append((x1, y1, x2, y2))
+                    
+                    # Pillow 'Coordinate lower is less than upper' hatasını önlemek için güvenlik kontrolü
+                    if x2 > x1 and y2 > y1:
+                        mp_faces.append((x1, y1, x2, y2))
             return mp_faces
 
         def get_opencv_faces(img):
@@ -2411,23 +2425,23 @@ class FaceBlurApp(ctk.CTk):
                     gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20)
                 )
                 for (x, y, fw, fh) in detected:
-                    cv_faces.append((
-                        int(x / scale), int(y / scale), 
-                        int((x + fw) / scale), int((y + fh) / scale)
-                    ))
+                    x1, y1 = int(x / scale), int(y / scale)
+                    x2, y2 = int((x + fw) / scale), int((y + fh) / scale)
+                    # Güvenlik Kontrolü
+                    if x2 > x1 and y2 > y1:
+                        cv_faces.append((x1, y1, x2, y2))
             
             if self.profile_cascade:
                 detected_profile = self.profile_cascade.detectMultiScale(
                     gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20)
                 )
                 for (x, y, fw, fh) in detected_profile:
-                    cv_faces.append((
-                        int(x / scale), int(y / scale), 
-                        int((x + fw) / scale), int((y + fh) / scale)
-                    ))
+                    x1, y1 = int(x / scale), int(y / scale)
+                    x2, y2 = int((x + fw) / scale), int((y + fh) / scale)
+                    # Güvenlik Kontrolü
+                    if x2 > x1 and y2 > y1:
+                        cv_faces.append((x1, y1, x2, y2))
             return cv_faces
-
-
 
         def merge_faces(base_list, new_list, threshold=0.4):
             for n_face in new_list:
@@ -2451,18 +2465,20 @@ class FaceBlurApp(ctk.CTk):
             return base_list
 
         try:
+            # Algılama her zaman küçültülmüş 'work_img' üzerinde yapılmalı (Performans için)
             if method == "mediapipe":
-                all_faces = get_mediapipe_faces(cv_image)
+                all_faces = get_mediapipe_faces(work_img)
             elif method == "opencv_haar":
-                all_faces = get_opencv_faces(cv_image)
+                all_faces = get_opencv_faces(work_img)
             elif method == "hybrid":
-                mp_faces = get_mediapipe_faces(cv_image)
-                cv_faces = get_opencv_faces(cv_image)
+                mp_faces = get_mediapipe_faces(work_img)
+                cv_faces = get_opencv_faces(work_img)
                 all_faces = merge_faces(mp_faces, cv_faces)
         except Exception as e:
             print(f"Algılama hatası: {e}")
         
         return all_faces
+
     
     def _show_batch_results(self, total, success, failed, faces, failed_files, output_dir):
         """Toplu işlem sonuçlarını göster"""
