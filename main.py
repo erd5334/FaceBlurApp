@@ -18,6 +18,24 @@ import platform
 import io
 import sys
 
+# Drag & Drop desteği
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    DND_AVAILABLE = True
+except ImportError:
+    DND_AVAILABLE = False
+
+# EXIF metadata temizleme
+try:
+    import piexif
+    PIEXIF_AVAILABLE = True
+except ImportError:
+    PIEXIF_AVAILABLE = False
+
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass
 # MediaPipe Tasks API import
 
 try:
@@ -57,7 +75,17 @@ user_settings = load_settings()
 ctk.set_appearance_mode(user_settings["appearance_mode"])
 ctk.set_default_color_theme(user_settings["color_theme"])
 
-class FaceBlurApp(ctk.CTk):
+# Drag & Drop için CTk ile TkinterDnD birleştirme
+if DND_AVAILABLE:
+    class _DnDBase(TkinterDnD.DnDWrapper, ctk.CTk):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.TkdndVersion = TkinterDnD._require(self)
+    _AppBase = _DnDBase
+else:
+    _AppBase = ctk.CTk
+
+class FaceBlurApp(_AppBase):
     def __init__(self):
         super().__init__()
         
@@ -129,9 +157,11 @@ class FaceBlurApp(ctk.CTk):
         self.selected_faces = []  # Seçili yüzler (True/False listesi)
         self.blur_strength = ctk.IntVar(value=3)
         self.detection_method = ctk.StringVar(value="hybrid")
-        self.blur_style = ctk.StringVar(value="gaussian")  # gaussian, pixelate, black, color, emoji
+        self.blur_style = ctk.StringVar(value="gaussian")  # gaussian, pixelate, black, color, emoji, sticker
         self.blur_color = "#000000"  # Renk dolgusu için varsayılan renk
         self.face_margin = ctk.IntVar(value=15)  # Seçim alanı genişletme yüzdesi (%)
+        self.sticker_image = None   # Özel sticker/logo (PIL Image)
+        self.exif_strip = ctk.BooleanVar(value=True)  # EXIF metadata temizleme
 
 
 
@@ -379,6 +409,18 @@ class FaceBlurApp(ctk.CTk):
         )
         self.batch_btn.pack(padx=15, pady=5, fill="x")
 
+        # Video Aç Butonu
+        self.video_btn = ctk.CTkButton(
+            self.sidebar_scroll,
+            text="🎬 Video İşle",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            height=45,
+            fg_color="#C0392B",
+            hover_color="#96281B",
+            command=self.open_video
+        )
+        self.video_btn.pack(padx=15, pady=5, fill="x")
+
         
         # Ayırıcı
         self.separator1 = ctk.CTkFrame(self.sidebar_scroll, height=2, fg_color="gray30")
@@ -441,7 +483,34 @@ class FaceBlurApp(ctk.CTk):
         )
         self.style_emoji.pack(padx=25, pady=2, anchor="w")
 
-        
+        # Sticker/Logo radio + seçim butonu
+        self.style_sticker = ctk.CTkRadioButton(
+            self.sidebar_scroll,
+            text="🖼️ Sticker/Logo",
+            variable=self.blur_style,
+            value="sticker"
+        )
+        self.style_sticker.pack(padx=25, pady=2, anchor="w")
+
+        self.sticker_select_btn = ctk.CTkButton(
+            self.sidebar_scroll,
+            text="📂 Logo Seç",
+            font=ctk.CTkFont(size=11),
+            height=28,
+            fg_color="#2980B9",
+            hover_color="#2471A3",
+            command=self.select_sticker
+        )
+        self.sticker_select_btn.pack(padx=30, pady=(0, 4), anchor="w")
+
+        self.sticker_name_label = ctk.CTkLabel(
+            self.sidebar_scroll,
+            text="(Logo seçilmedi)",
+            font=ctk.CTkFont(size=10),
+            text_color="gray"
+        )
+        self.sticker_name_label.pack(padx=30, anchor="w")
+
         # Ayırıcı
         self.separator2b = ctk.CTkFrame(self.sidebar_scroll, height=2, fg_color="gray30")
         self.separator2b.pack(fill="x", padx=15, pady=10)
@@ -589,6 +658,15 @@ class FaceBlurApp(ctk.CTk):
             command=self.save_image
         )
         self.save_btn.pack(padx=15, pady=5, fill="x")
+
+        # EXIF Metadata temizleme checkbox
+        self.exif_checkbox = ctk.CTkCheckBox(
+            self.sidebar_scroll,
+            text="🔒 EXIF Metadata Temizle",
+            variable=self.exif_strip,
+            font=ctk.CTkFont(size=11)
+        )
+        self.exif_checkbox.pack(padx=15, pady=(0, 5), anchor="w")
         
         self.reset_btn = ctk.CTkButton(
             self.sidebar_scroll,
@@ -825,11 +903,16 @@ class FaceBlurApp(ctk.CTk):
         # Placeholder text
         self.placeholder_text_id = self.canvas.create_text(
             400, 300,
-            text="🖼️\n\nFotoğraf yüklemek için\n'Fotoğraf Seç' butonuna tıklayın\n\nveya Ctrl+O tuşlarına basın\n\nDesteklenen: PNG, JPG, JPEG, BMP, WEBP",
+            text="🖼️\n\nFotoğraf yüklemek için\n'Fotoğraf Seç' butonuna tıklayın\n\nveya Ctrl+O tuşlarına basın\n\nDosyayı buraya sürükleyip bırakabilirsiniz\n\nDesteklenen: PNG, JPG, JPEG, BMP, WEBP",
             fill="gray",
             font=("Segoe UI", 14),
             justify="center"
         )
+
+        # Drag & Drop bağlantısı
+        if DND_AVAILABLE:
+            self.canvas.drop_target_register(DND_FILES)
+            self.canvas.dnd_bind('<<Drop>>', self._on_drop)
         
         # Canvas image reference
         self.canvas_image = None
@@ -1625,6 +1708,8 @@ class FaceBlurApp(ctk.CTk):
                     result_image = self._apply_color_fill(result_image, nx1, ny1, nx2, ny2)
                 elif blur_style == "emoji":
                     result_image = self._apply_emoji(result_image, nx1, ny1, nx2, ny2)
+                elif blur_style == "sticker":
+                    result_image = self._apply_sticker(result_image, nx1, ny1, nx2, ny2)
 
             
             self.processed_image = result_image
@@ -1889,20 +1974,30 @@ class FaceBlurApp(ctk.CTk):
         
         if file_path:
             try:
-                if file_path.lower().endswith(('.jpg', '.jpeg')):
-                    if self.processed_image.mode == 'RGBA':
-                        rgb_image = self.processed_image.convert('RGB')
-                        rgb_image.save(file_path, quality=95)
-                    else:
-                        self.processed_image.save(file_path, quality=95)
-                else:
-                    self.processed_image.save(file_path)
-                
-                self.status_label.configure(text=f"💾 Kaydedildi")
-                messagebox.showinfo("Başarılı", f"Görüntü başarıyla kaydedildi:\n{file_path}")
-                
+                self._save_clean_image(self.processed_image, file_path)
+                self.status_label.configure(text="💾 Kaydedildi")
+                info = "Görüntü başarıyla kaydedildi"
+                if self.exif_strip.get():
+                    info += "\n🔒 EXIF metadata temizlendi"
+                messagebox.showinfo("Başarılı", f"{info}:\n{file_path}")
             except Exception as e:
                 messagebox.showerror("Hata", f"Kaydetme hatası:\n{e}")
+
+    def _save_clean_image(self, img: Image.Image, path: str):
+        """Görüntüyü EXIF temizleyerek kaydet."""
+        is_jpeg = path.lower().endswith(('.jpg', '.jpeg'))
+        save_img = img.convert('RGB') if (is_jpeg and img.mode == 'RGBA') else img.copy()
+
+        if self.exif_strip.get():
+            # Temiz bir PIL Image oluştur (metadata taşımaz)
+            clean = Image.new(save_img.mode, save_img.size)
+            clean.paste(save_img)
+            save_img = clean
+
+        if is_jpeg:
+            save_img.save(path, quality=95, optimize=True)
+        else:
+            save_img.save(path)
     
     def reset_image(self):
         """Görüntüyü sıfırla"""
@@ -1921,9 +2016,98 @@ class FaceBlurApp(ctk.CTk):
             self.status_label.configure(text="🔄 Sıfırlandı")
             self.face_count_label.configure(text="")
     
+    # ------------------------------------------------------------------
+    # DRAG & DROP
+    # ------------------------------------------------------------------
+    def _on_drop(self, event):
+        """Sürükle-bırak ile dosya yükle."""
+        raw = event.data.strip()
+        # Windows'ta {} ile sarılı gelebilir
+        if raw.startswith('{') and raw.endswith('}'):
+            raw = raw[1:-1]
+        paths = raw.split('} {') if '} {' in raw else [raw]
+        valid_exts = {'.png', '.jpg', '.jpeg', '.bmp', '.webp', '.gif'}
+        images = [p for p in paths if Path(p).suffix.lower() in valid_exts]
+        videos = [p for p in paths if Path(p).suffix.lower() in {'.mp4', '.avi', '.mkv', '.mov'}]
+
+        if images:
+            if len(images) == 1:
+                self.load_image_from_path(images[0])
+            else:
+                BatchManagerWindow(self, images)
+        elif videos:
+            VideoProcessorWindow(self, videos[0])
+        else:
+            messagebox.showwarning("Uyarı", "Desteklenmeyen dosya türü sürüklendi.")
+
+    # ------------------------------------------------------------------
+    # STICKER / LOGO
+    # ------------------------------------------------------------------
+    def select_sticker(self):
+        """Sticker/logo dosyası seç."""
+        path = filedialog.askopenfilename(
+            title="Logo / Sticker Seç",
+            filetypes=[
+                ("Görüntü Dosyaları", "*.png *.jpg *.jpeg *.bmp *.webp"),
+                ("Tüm Dosyalar", "*.*")
+            ]
+        )
+        if path:
+            try:
+                self.sticker_image = Image.open(path).convert("RGBA")
+                self.sticker_name_label.configure(
+                    text=Path(path).name[:28],
+                    text_color="#2ECC71"
+                )
+                self.blur_style.set("sticker")
+            except Exception as e:
+                messagebox.showerror("Hata", f"Logo yüklenemedi:\n{e}")
+
+    def _apply_sticker(self, image: Image.Image, x1, y1, x2, y2) -> Image.Image:
+        """Yüz alanına sticker/logo yapıştır."""
+        if self.sticker_image is None:
+            messagebox.showwarning("Uyarı", "Önce bir logo/sticker seçin!")
+            return image
+
+        face_w = x2 - x1
+        face_h = y2 - y1
+        if face_w < 1 or face_h < 1:
+            return image
+
+        sticker = self.sticker_image.copy()
+        sticker = sticker.resize((face_w, face_h), Image.LANCZOS)
+
+        # Elips maskesi uygula
+        mask = Image.new('L', (face_w, face_h), 0)
+        ImageDraw.Draw(mask).ellipse([0, 0, face_w, face_h], fill=255)
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=6))
+
+        base = image.convert("RGBA")
+        sticker_rgba = sticker  # already RGBA
+        # Maskeyi alpha kanalı ile birleştir
+        combined_mask = Image.new('L', (face_w, face_h), 0)
+        combined_mask.paste(mask)
+        sticker_rgba.putalpha(combined_mask)
+        base.paste(sticker_rgba, (x1, y1), sticker_rgba)
+        return base.convert("RGB")
+
+    # ------------------------------------------------------------------
+    # VIDEO İŞLEME
+    # ------------------------------------------------------------------
+    def open_video(self):
+        """Video dosyası seç ve işleyiciyi aç."""
+        path = filedialog.askopenfilename(
+            title="Video Dosyası Seç",
+            filetypes=[
+                ("Video Dosyaları", "*.mp4 *.avi *.mkv *.mov *.wmv"),
+                ("Tüm Dosyalar", "*.*")
+            ]
+        )
+        if path:
+            VideoProcessorWindow(self, path)
+
     def batch_process(self):
-        """Toplu işlem - birden fazla fotoğraf işle"""
-        # Dosya seçimi
+        """Toplu işlem - yeni yönetici penceresi ile"""
         file_paths = filedialog.askopenfilenames(
             title="Toplu İşlem İçin Fotoğraflar Seç",
             filetypes=[
@@ -1931,21 +2115,12 @@ class FaceBlurApp(ctk.CTk):
                 ("Tüm Dosyalar", "*.*")
             ]
         )
-        
         if not file_paths:
             return
-        
-        # Çıktı klasörü seç
-        output_dir = filedialog.askdirectory(
-            title="İşlenmiş Dosyaların Kaydedileceği Klasörü Seç"
-        )
-        
-        if not output_dir:
-            return
-        
-        # Önizleme penceresi göster
-        self.show_batch_preview(file_paths, output_dir)
+        BatchManagerWindow(self, list(file_paths))
+
     
+    # ---- Eski toplu işlem metodları (BatchManagerWindow ile değiştirildi) ----
     def show_batch_preview(self, file_paths, output_dir):
         """Toplu işlem öncesi önizleme göster"""
         if not file_paths:
@@ -2521,6 +2696,1290 @@ class FaceBlurApp(ctk.CTk):
         
         self.status_label.configure(text=f"✅ {total} dosya işlendi")
 
+
+
+# ============================================================
+# VIDEO İŞLEYİCİ
+# ============================================================
+class VideoProcessorWindow(ctk.CTkToplevel):
+    """Kare kare yüz bulanıklaştırma yapan video işleyici."""
+
+    def __init__(self, parent: "FaceBlurApp", video_path: str):
+        super().__init__(parent)
+        self.parent_app = parent
+        self.video_path = video_path
+        self.title(f"Video İşleyici — {Path(video_path).name}")
+        self.geometry("900x650")
+        self.minsize(700, 500)
+        self.transient(parent)
+        self.grab_set()
+
+        self._cancelled = False
+        self._cap = None
+        self._total_frames = 0
+        self._fps = 25.0
+        self._out_path: str | None = None
+
+        self._build_ui()
+        self.after(200, self._load_video_info)
+
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
+    def _build_ui(self):
+        # Başlık
+        ctk.CTkLabel(
+            self, text="🎬 Video İşleyici",
+            font=ctk.CTkFont(size=18, weight="bold")
+        ).pack(pady=(15, 5))
+
+        ctk.CTkLabel(
+            self,
+            text=f"📄 {Path(self.video_path).name}",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        ).pack()
+
+        # Önizleme canvas
+        preview_frame = ctk.CTkFrame(self, fg_color="gray15", corner_radius=10)
+        preview_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+        from tkinter import Canvas as TkCanvas
+        self.preview_canvas = TkCanvas(preview_frame, bg="#1e1e1e", highlightthickness=0)
+        self.preview_canvas.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Bilgi satırı
+        info_frame = ctk.CTkFrame(self, fg_color="transparent")
+        info_frame.pack(fill="x", padx=20)
+
+        self.info_lbl = ctk.CTkLabel(
+            info_frame, text="Video yükleniyor…",
+            font=ctk.CTkFont(size=12)
+        )
+        self.info_lbl.pack(side="left")
+
+        self.face_count_lbl = ctk.CTkLabel(
+            info_frame, text="",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#3B8ED0"
+        )
+        self.face_count_lbl.pack(side="right")
+
+        # İlerleme çubuğu
+        self.progress = ctk.CTkProgressBar(self, height=16)
+        self.progress.pack(fill="x", padx=20, pady=(8, 4))
+        self.progress.set(0)
+
+        self.pct_lbl = ctk.CTkLabel(
+            self, text="0%",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#3B8ED0"
+        )
+        self.pct_lbl.pack()
+
+        # Ayarlar satırı
+        opts_frame = ctk.CTkFrame(self, fg_color="transparent")
+        opts_frame.pack(fill="x", padx=20, pady=6)
+
+        ctk.CTkLabel(opts_frame, text="Ayarlar: Ana penceredeki Bulanıklaştırma Stili ve Seviyesi kullanılır.",
+                     font=ctk.CTkFont(size=10), text_color="gray").pack(side="left")
+
+        # Butonlar
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(0, 15))
+
+        self.output_btn = ctk.CTkButton(
+            btn_frame, text="📁 Çıktı Dosyası Seç", width=180, height=38,
+            font=ctk.CTkFont(size=12),
+            fg_color="#E67E22", hover_color="#D35400",
+            command=self._select_output
+        )
+        self.output_btn.pack(side="left", padx=4)
+
+        self.preview_btn = ctk.CTkButton(
+            btn_frame, text="👁 İlk Kareyi Önizle", width=170, height=38,
+            font=ctk.CTkFont(size=12),
+            fg_color="#2D7D46", hover_color="#236B38",
+            command=self._preview_first_frame
+        )
+        self.preview_btn.pack(side="left", padx=4)
+
+        self.start_btn = ctk.CTkButton(
+            btn_frame, text="▶ İşlemeye Başla", width=160, height=38,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#9B59B6", hover_color="#7D3C98",
+            command=self._start_processing
+        )
+        self.start_btn.pack(side="right", padx=4)
+
+        self.cancel_btn = ctk.CTkButton(
+            btn_frame, text="⏹ Durdur", width=110, height=38,
+            font=ctk.CTkFont(size=12),
+            fg_color="#E74C3C", hover_color="#C0392B",
+            state="disabled",
+            command=self._cancel
+        )
+        self.cancel_btn.pack(side="right", padx=4)
+
+    # ------------------------------------------------------------------
+    # VIDEO BİLGİSİ
+    # ------------------------------------------------------------------
+    def _load_video_info(self):
+        try:
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                self.info_lbl.configure(text="❌ Video açılamadı!", text_color="#E74C3C")
+                return
+            self._total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self._fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            dur = self._total_frames / self._fps
+            minutes, seconds = divmod(int(dur), 60)
+            self.info_lbl.configure(
+                text=f"✅ {self._total_frames} kare  |  {width}×{height}  |  {self._fps:.1f} fps  |  {minutes}:{seconds:02d}",
+                text_color="#2ECC71"
+            )
+            cap.release()
+            self._preview_first_frame()
+        except Exception as e:
+            self.info_lbl.configure(text=f"❌ Hata: {e}", text_color="#E74C3C")
+
+    def _select_output(self):
+        ext = Path(self.video_path).suffix.lower() or ".mp4"
+        path = filedialog.asksaveasfilename(
+            title="İşlenmiş Videoyu Kaydet",
+            defaultextension=ext,
+            filetypes=[("MP4 Video", "*.mp4"), ("AVI Video", "*.avi"), ("Tüm Dosyalar", "*.*")]
+        )
+        if path:
+            self._out_path = path
+            self.output_btn.configure(text=f"📁 {Path(path).name}")
+
+    # ------------------------------------------------------------------
+    # ÖNİZLEME
+    # ------------------------------------------------------------------
+    def _preview_first_frame(self):
+        try:
+            cap = cv2.VideoCapture(self.video_path)
+            ret, frame = cap.read()
+            cap.release()
+            if not ret:
+                return
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_frame = Image.fromarray(rgb)
+            # Yüzleri algıla ve çiz
+            faces = self.parent_app._detect_faces_sync(rgb)
+            drw = ImageDraw.Draw(pil_frame)
+            for (x1, y1, x2, y2) in faces:
+                for t in range(3):
+                    drw.ellipse([x1-t, y1-t, x2+t, y2+t], outline="#00FF00")
+            self.face_count_lbl.configure(
+                text=f"🎭 {len(faces)} yüz (ilk kare)"
+            )
+            self._show_on_canvas(pil_frame)
+        except Exception as e:
+            self.info_lbl.configure(text=f"Önizleme hatası: {e}", text_color="#E74C3C")
+
+    def _show_on_canvas(self, pil_img: Image.Image):
+        self.preview_canvas.update()
+        cw = self.preview_canvas.winfo_width() or 700
+        ch = self.preview_canvas.winfo_height() or 350
+        pil_img.thumbnail((cw - 10, ch - 10), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(pil_img)
+        self.preview_canvas.delete("all")
+        self.preview_canvas.create_image(cw // 2, ch // 2, image=photo, anchor="center")
+        self.preview_canvas.image = photo
+
+    # ------------------------------------------------------------------
+    # İŞLEME
+    # ------------------------------------------------------------------
+    def _start_processing(self):
+        if self._out_path is None:
+            ext = Path(self.video_path).suffix.lower() or ".mp4"
+            path = filedialog.asksaveasfilename(
+                title="İşlenmiş Videoyu Kaydet",
+                defaultextension=ext,
+                filetypes=[("MP4 Video", "*.mp4"), ("AVI Video", "*.avi"), ("Tüm Dosyalar", "*.*")]
+            )
+            if not path:
+                return
+            self._out_path = path
+            self.output_btn.configure(text=f"📁 {Path(path).name}")
+
+        self._cancelled = False
+        self.start_btn.configure(state="disabled")
+        self.cancel_btn.configure(state="normal")
+        self.preview_btn.configure(state="disabled")
+        threading.Thread(target=self._process_thread, daemon=True).start()
+
+    def _cancel(self):
+        self._cancelled = True
+        self.cancel_btn.configure(state="disabled", text="⏳ Durduruluyor…")
+
+    def _process_thread(self):
+        cap = cv2.VideoCapture(self.video_path)
+        if not cap.isOpened():
+            self.after(0, lambda: messagebox.showerror("Hata", "Video açılamadı!"))
+            return
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+
+        out_path = self._out_path
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v") if out_path.endswith(".mp4") else cv2.VideoWriter_fourcc(*"XVID")
+        out = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+
+        blur_strength = int(self.parent_app.blur_strength.get())
+        blur_style = self.parent_app.blur_style.get()
+        margin_pct = self.parent_app.face_margin.get() / 100.0
+
+        frame_idx = 0
+        total_faces = 0
+        preview_every = max(1, total // 30)  # Her 30 karede bir önizleme
+
+        while True:
+            if self._cancelled:
+                break
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_frame = Image.fromarray(rgb)
+
+            faces = self.parent_app._detect_faces_sync(rgb)
+            total_faces += len(faces)
+            img_w, img_h = pil_frame.size
+
+            for (x1, y1, x2, y2) in faces:
+                fw, fh = x2 - x1, y2 - y1
+                nx1 = int(max(0, x1 - fw * margin_pct))
+                ny1 = int(max(0, y1 - fh * margin_pct))
+                nx2 = int(min(img_w, x2 + fw * margin_pct))
+                ny2 = int(min(img_h, y2 + fh * margin_pct))
+                app = self.parent_app
+                if blur_style == "gaussian":
+                    pil_frame = app._apply_gaussian_blur(pil_frame, nx1, ny1, nx2, ny2, blur_strength)
+                elif blur_style == "pixelate":
+                    pil_frame = app._apply_pixelate(pil_frame, nx1, ny1, nx2, ny2, blur_strength)
+                elif blur_style == "black":
+                    pil_frame = app._apply_black_box(pil_frame, nx1, ny1, nx2, ny2)
+                elif blur_style == "color":
+                    pil_frame = app._apply_color_fill(pil_frame, nx1, ny1, nx2, ny2)
+                elif blur_style == "emoji":
+                    pil_frame = app._apply_emoji(pil_frame, nx1, ny1, nx2, ny2)
+                elif blur_style == "sticker":
+                    pil_frame = app._apply_sticker(pil_frame, nx1, ny1, nx2, ny2)
+
+            # PIL → OpenCV BGR
+            out_frame = cv2.cvtColor(np.array(pil_frame), cv2.COLOR_RGB2BGR)
+            out.write(out_frame)
+
+            frame_idx += 1
+            pct = frame_idx / total
+
+            if frame_idx % preview_every == 0:
+                snap = pil_frame.copy()
+                self.after(0, lambda s=snap: self._show_on_canvas(s))
+
+            self.after(0, lambda p=pct, f=frame_idx, tf=total_faces: [
+                self.progress.set(p),
+                self.pct_lbl.configure(text=f"{int(p*100)}%  ({f}/{total} kare)"),
+                self.face_count_lbl.configure(text=f"🎭 {tf} yüz bulanıklaştırıldı")
+            ])
+
+        cap.release()
+        out.release()
+
+        if self._cancelled:
+            self.after(0, lambda: [
+                self.info_lbl.configure(text="⏹ İşlem durduruldu.", text_color="#E74C3C"),
+                self.start_btn.configure(state="normal"),
+                self.cancel_btn.configure(state="disabled", text="⏹ Durdur"),
+                self.preview_btn.configure(state="normal")
+            ])
+        else:
+            self.after(0, lambda: self._on_done(frame_idx, total_faces))
+
+    def _on_done(self, frames: int, faces: int):
+        self.progress.set(1.0)
+        self.pct_lbl.configure(text="100% — Tamamlandı!")
+        self.start_btn.configure(state="normal")
+        self.cancel_btn.configure(state="disabled", text="⏹ Durdur")
+        self.preview_btn.configure(state="normal")
+        self.info_lbl.configure(
+            text=f"✅ {frames} kare işlendi  |  {faces} yüz bulanıklaştırıldı",
+            text_color="#2ECC71"
+        )
+        msg = (
+            f"🎉 Video işleme tamamlandı!\n\n"
+            f"İşlenen kare: {frames}\n"
+            f"Bulanıklaştırılan yüz: {faces}\n\n"
+            f"📁 Kayıt yeri:\n{self._out_path}"
+        )
+        messagebox.showinfo("Tamamlandı", msg)
+
+
+# ============================================================
+# TOPLU İŞLEM YÖNETİCİSİ
+# ============================================================
+class BatchManagerWindow(ctk.CTkToplevel):
+    """Her fotoğrafı ayrı kart olarak gösteren toplu işlem yöneticisi."""
+
+    THUMB_W = 220
+    THUMB_H = 160
+
+    def __init__(self, parent: FaceBlurApp, file_paths: list):
+        super().__init__(parent)
+        self.parent_app = parent
+        self.title(f"Toplu İşlem Yöneticisi  —  {len(file_paths)} Fotoğraf")
+        self.geometry("1150x780")
+        self.minsize(900, 600)
+        self.transient(parent)
+        self.grab_set()
+
+        self.items: list[dict] = []   # Her fotoğraf için state
+        self.output_dir: str | None = None
+        self._cancelled = False
+
+        self._build_ui()
+        self.after(100, lambda: self._load_images(file_paths))
+
+    # ------------------------------------------------------------------
+    # UI KURULUMU
+    # ------------------------------------------------------------------
+    def _build_ui(self):
+        # ---- Üst kontrol çubuğu ----
+        top = ctk.CTkFrame(self, height=65, corner_radius=0)
+        top.pack(fill="x")
+        top.pack_propagate(False)
+
+        ctk.CTkLabel(
+            top, text="🖼️ Toplu İşlem Yöneticisi",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).pack(side="left", padx=15)
+
+        # Sağ butonlar (ters sırayla pack)
+        self.start_btn = ctk.CTkButton(
+            top, text="✅ İşleme Başla", width=160, height=38,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#9B59B6", hover_color="#7D3C98",
+            command=self._start_processing
+        )
+        self.start_btn.pack(side="right", padx=8)
+
+        self.output_btn = ctk.CTkButton(
+            top, text="📁 Çıktı Klasörü Seç", width=165, height=38,
+            font=ctk.CTkFont(size=12),
+            fg_color="#E67E22", hover_color="#D35400",
+            command=self._select_output
+        )
+        self.output_btn.pack(side="right", padx=4)
+
+        self.detect_all_btn = ctk.CTkButton(
+            top, text="🔍 Tüm Yüzleri Algıla", width=185, height=38,
+            font=ctk.CTkFont(size=12),
+            fg_color="#2D7D46", hover_color="#236B38",
+            command=self._detect_all
+        )
+        self.detect_all_btn.pack(side="right", padx=4)
+
+        # ---- Kaydırılabilir fotoğraf alanı ----
+        self.scroll = ctk.CTkScrollableFrame(self, fg_color="gray10")
+        self.scroll.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # ---- Alt durum çubuğu ----
+        bottom = ctk.CTkFrame(self, height=48, corner_radius=0)
+        bottom.pack(fill="x")
+        bottom.pack_propagate(False)
+
+        self.status_lbl = ctk.CTkLabel(
+            bottom, text="Fotoğraflar yükleniyor…",
+            font=ctk.CTkFont(size=12)
+        )
+        self.status_lbl.pack(side="left", padx=15)
+
+        self.progress_bar = ctk.CTkProgressBar(bottom, width=320, height=14)
+        self.progress_bar.pack(side="right", padx=15)
+        self.progress_bar.set(0)
+
+    # ------------------------------------------------------------------
+    # FOTOĞRAF YÜKLEME
+    # ------------------------------------------------------------------
+    def _load_images(self, paths: list):
+        for idx, path in enumerate(paths):
+            self._create_card(idx, path)
+        n = len(self.items)
+        self.status_lbl.configure(
+            text=f"{n} fotoğraf yüklendi. 'Tüm Yüzleri Algıla' butonuna tıklayın."
+        )
+        self.progress_bar.set(1.0)
+
+    def _create_card(self, index: int, path: str):
+        """Tek fotoğraf kartı oluştur."""
+        card = ctk.CTkFrame(self.scroll, fg_color="gray20", corner_radius=10)
+        card.pack(fill="x", padx=6, pady=5)
+
+        # --- Sol: küçük resim ---
+        thumb_frame = ctk.CTkFrame(card, fg_color="gray15",
+                                   width=self.THUMB_W + 10,
+                                   height=self.THUMB_H + 10,
+                                   corner_radius=8)
+        thumb_frame.pack(side="left", padx=10, pady=10)
+        thumb_frame.pack_propagate(False)
+
+        from tkinter import Canvas as TkCanvas
+        canvas = TkCanvas(
+            thumb_frame, bg="#1e1e1e",
+            highlightthickness=0,
+            width=self.THUMB_W,
+            height=self.THUMB_H
+        )
+        canvas.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # --- Orta: bilgi + checkbox'lar ---
+        mid = ctk.CTkFrame(card, fg_color="transparent")
+        mid.pack(side="left", fill="both", expand=True, padx=5, pady=10)
+
+        fname = os.path.basename(path)
+        ctk.CTkLabel(
+            mid, text=fname,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            anchor="w"
+        ).pack(anchor="w")
+
+        status_lbl = ctk.CTkLabel(
+            mid, text="⏳ Yükleniyor…",
+            font=ctk.CTkFont(size=11),
+            text_color="gray", anchor="w"
+        )
+        status_lbl.pack(anchor="w", pady=(2, 6))
+
+        cb_frame = ctk.CTkFrame(mid, fg_color="transparent")
+        cb_frame.pack(fill="x")
+
+        # --- Sağ: tekil butonlar ---
+        right = ctk.CTkFrame(card, fg_color="transparent", width=140)
+        right.pack(side="right", padx=10, pady=10)
+        right.pack_propagate(False)
+
+        ctk.CTkButton(
+            right, text="🔍 Algıla", width=128, height=30,
+            font=ctk.CTkFont(size=11),
+            fg_color="#2D7D46", hover_color="#236B38",
+            command=lambda i=index: threading.Thread(
+                target=self._detect_single_thread, args=(i,), daemon=True
+            ).start()
+        ).pack(pady=3)
+
+        ctk.CTkButton(
+            right, text="🔄 Sıfırla", width=128, height=30,
+            font=ctk.CTkFont(size=11),
+            fg_color="#555555", hover_color="#444444",
+            command=lambda i=index: self._reset_card(i)
+        ).pack(pady=3)
+
+        ctk.CTkButton(
+            right, text="🔎 Düzenle / Çiz", width=128, height=30,
+            font=ctk.CTkFont(size=11),
+            fg_color="#2980B9", hover_color="#2471A3",
+            command=lambda i=index: self._open_editor(i)
+        ).pack(pady=3)
+
+        # --- State kaydı ---
+        item = {
+            "index": index,
+            "path": path,
+            "image": None,        # PIL Image
+            "cv_image": None,     # np.ndarray
+            "face_locations": [],
+            "selected_faces": [],
+            "canvas": canvas,
+            "status_lbl": status_lbl,
+            "cb_frame": cb_frame,
+            "checkbox_vars": [],
+        }
+        self.items.append(item)
+
+        # Görüntüyü yükle ve küçük resmi göster
+        try:
+            img = Image.open(path)
+            if img.mode == "RGBA":
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                bg.paste(img, mask=img.split()[3])
+                img = bg
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+            item["image"] = img
+            item["cv_image"] = np.array(img)
+            self._draw_thumb(item)
+            status_lbl.configure(
+                text=f"✅ Yüklendi  ({img.width}×{img.height})",
+                text_color="#2ECC71"
+            )
+        except Exception as e:
+            status_lbl.configure(
+                text=f"❌ Yüklenemedi: {str(e)[:50]}",
+                text_color="#E74C3C"
+            )
+
+    # ------------------------------------------------------------------
+    # KÜÇÜK RESİM ÇİZİMİ
+    # ------------------------------------------------------------------
+    def _draw_thumb(self, item: dict):
+        """Yüz kutucukları ile birlikte küçük resmi canvas'a çiz."""
+        if item["image"] is None:
+            return
+        img_copy = item["image"].copy()
+        if item["face_locations"]:
+            drw = ImageDraw.Draw(img_copy)
+            for i, (x1, y1, x2, y2) in enumerate(item["face_locations"]):
+                sel = i < len(item["selected_faces"]) and item["selected_faces"][i]
+                color = "#00FF00" if sel else "#FF6B6B"
+                for t in range(3):
+                    drw.ellipse([x1 - t, y1 - t, x2 + t, y2 + t], outline=color)
+                # Numara etiketi
+                lx, ly = x1, max(0, y1 - 18)
+                drw.rectangle([lx, ly, lx + 32, ly + 16], fill=color)
+                drw.text((lx + 4, ly + 1), f"#{i+1}", fill="black")
+        thumb = img_copy.copy()
+        thumb.thumbnail((self.THUMB_W, self.THUMB_H), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(thumb)
+        canvas = item["canvas"]
+        canvas.delete("all")
+        canvas.create_image(
+            self.THUMB_W // 2, self.THUMB_H // 2,
+            image=photo, anchor="center"
+        )
+        canvas.image = photo  # referans koru
+
+    # ------------------------------------------------------------------
+    # YÜZ TESPİT
+    # ------------------------------------------------------------------
+    def _detect_all(self):
+        self.detect_all_btn.configure(state="disabled", text="🔍 Algılanıyor…")
+        self.status_lbl.configure(text="Tüm yüzler algılanıyor…")
+        self.progress_bar.set(0)
+        threading.Thread(target=self._detect_all_thread, daemon=True).start()
+
+    def _detect_all_thread(self):
+        total = len(self.items)
+        for i, item in enumerate(self.items):
+            if item["cv_image"] is None:
+                continue
+            self.after(0, lambda s=item["status_lbl"]: s.configure(
+                text="🔍 Algılanıyor…", text_color="#3B8ED0"
+            ))
+            self._run_detection(i)
+            self.after(0, lambda p=(i + 1) / total: self.progress_bar.set(p))
+
+        detected_total = sum(len(it["face_locations"]) for it in self.items)
+        self.after(0, lambda: [
+            self.detect_all_btn.configure(state="normal", text="🔍 Tüm Yüzleri Algıla"),
+            self.status_lbl.configure(
+                text=f"✅ Algılama tamamlandı — toplam {detected_total} yüz bulundu."
+            )
+        ])
+
+    def _detect_single_thread(self, index: int):
+        item = self.items[index]
+        if item["cv_image"] is None:
+            return
+        self.after(0, lambda: item["status_lbl"].configure(
+            text="🔍 Algılanıyor…", text_color="#3B8ED0"
+        ))
+        self._run_detection(index)
+
+    def _run_detection(self, index: int):
+        """Yüz tespiti yap ve kartı güncelle."""
+        item = self.items[index]
+        faces = self.parent_app._detect_faces_sync(item["cv_image"])
+        item["face_locations"] = list(faces)
+        item["selected_faces"] = [True] * len(faces)
+        self.after(0, lambda: self._update_card(index))
+
+    def _update_card(self, index: int):
+        item = self.items[index]
+        n = len(item["face_locations"])
+        if n > 0:
+            item["status_lbl"].configure(
+                text=f"🎭 {n} yüz bulundu — seçimleri düzenleyebilirsiniz",
+                text_color="#2ECC71"
+            )
+        else:
+            item["status_lbl"].configure(
+                text="❌ Yüz bulunamadı", text_color="#E74C3C"
+            )
+        self._draw_thumb(item)
+        self._rebuild_checkboxes(index)
+
+    # ------------------------------------------------------------------
+    # CHECKBOX YÖNETİMİ
+    # ------------------------------------------------------------------
+    def _rebuild_checkboxes(self, index: int):
+        item = self.items[index]
+        cb_frame = item["cb_frame"]
+        for w in cb_frame.winfo_children():
+            w.destroy()
+        item["checkbox_vars"].clear()
+
+        if not item["face_locations"]:
+            ctk.CTkLabel(
+                cb_frame, text="Yüz algılanamadı.",
+                font=ctk.CTkFont(size=10), text_color="gray"
+            ).pack(anchor="w")
+            return
+
+        for i in range(len(item["face_locations"])):
+            var = ctk.BooleanVar(
+                value=item["selected_faces"][i]
+                if i < len(item["selected_faces"]) else True
+            )
+            item["checkbox_vars"].append(var)
+            ctk.CTkCheckBox(
+                cb_frame,
+                text=f"Yüz #{i + 1}",
+                variable=var,
+                font=ctk.CTkFont(size=11),
+                width=80,
+                command=lambda idx=index: self._on_cb_change(idx)
+            ).pack(side="left", padx=4)
+
+    def _on_cb_change(self, index: int):
+        item = self.items[index]
+        item["selected_faces"] = [v.get() for v in item["checkbox_vars"]]
+        self._draw_thumb(item)
+
+    def _reset_card(self, index: int):
+        item = self.items[index]
+        item["face_locations"] = []
+        item["selected_faces"] = []
+        item["checkbox_vars"] = []
+        for w in item["cb_frame"].winfo_children():
+            w.destroy()
+        item["status_lbl"].configure(text="🔄 Sıfırlandı", text_color="gray")
+        self._draw_thumb(item)
+
+    def _open_editor(self, index: int):
+        """Fotoğrafı düzenleyici pencerede aç."""
+        item = self.items[index]
+        if item["image"] is None:
+            messagebox.showwarning("Uyarı", "Önce fotoğraf yüklenmeli!")
+            return
+        BatchImageEditorWindow(self, item)
+
+    # ------------------------------------------------------------------
+    # ÇIKTI KLASÖRÜ
+    # ------------------------------------------------------------------
+    def _select_output(self):
+        d = filedialog.askdirectory(title="Çıktı Klasörü Seç")
+        if d:
+            self.output_dir = d
+            short = os.path.basename(d) or d
+            self.output_btn.configure(text=f"📁 {short}")
+
+    # ------------------------------------------------------------------
+    # İŞLEME BAŞLA
+    # ------------------------------------------------------------------
+    def _start_processing(self):
+        if self.output_dir is None:
+            d = filedialog.askdirectory(title="Önce çıktı klasörü seçin")
+            if not d:
+                return
+            self.output_dir = d
+            self.output_btn.configure(text=f"📁 {os.path.basename(d) or d}")
+
+        has_faces = any(
+            any(item["selected_faces"]) for item in self.items
+            if item["selected_faces"]
+        )
+        if not has_faces:
+            messagebox.showwarning(
+                "Uyarı",
+                "Hiçbir fotoğrafta seçili yüz yok!\n"
+                "Önce 'Tüm Yüzleri Algıla' butonuna tıklayın."
+            )
+            return
+
+        self.detect_all_btn.configure(state="disabled")
+        self.start_btn.configure(state="disabled", text="⚙️ İşleniyor…")
+        self._cancelled = False
+        threading.Thread(target=self._process_thread, daemon=True).start()
+
+    def _process_thread(self):
+        total = len(self.items)
+        success = 0
+        failed_names = []
+        total_faces_blurred = 0
+
+        blur_strength = int(self.parent_app.blur_strength.get())
+        blur_style = self.parent_app.blur_style.get()
+        margin_pct = self.parent_app.face_margin.get() / 100.0
+
+        for i, item in enumerate(self.items):
+            if self._cancelled:
+                break
+            if item["image"] is None:
+                failed_names.append(os.path.basename(item["path"]))
+                continue
+
+            self.after(0, lambda s=item["status_lbl"]: s.configure(
+                text="⚙️ İşleniyor…", text_color="#3B8ED0"
+            ))
+            self.after(0, lambda p=i / total: self.progress_bar.set(p))
+
+            try:
+                result = item["image"].copy()
+                img_w, img_h = result.size
+                n_blurred = 0
+
+                for j, (x1, y1, x2, y2) in enumerate(item["face_locations"]):
+                    sel = (
+                        j < len(item["selected_faces"])
+                        and item["selected_faces"][j]
+                    )
+                    if not sel:
+                        continue
+
+                    w, h = x2 - x1, y2 - y1
+                    nx1 = int(max(0, x1 - w * margin_pct))
+                    ny1 = int(max(0, y1 - h * margin_pct))
+                    nx2 = int(min(img_w, x2 + w * margin_pct))
+                    ny2 = int(min(img_h, y2 + h * margin_pct))
+
+                    app = self.parent_app
+                    if blur_style == "gaussian":
+                        result = app._apply_gaussian_blur(result, nx1, ny1, nx2, ny2, blur_strength)
+                    elif blur_style == "pixelate":
+                        result = app._apply_pixelate(result, nx1, ny1, nx2, ny2, blur_strength)
+                    elif blur_style == "black":
+                        result = app._apply_black_box(result, nx1, ny1, nx2, ny2)
+                    elif blur_style == "color":
+                        result = app._apply_color_fill(result, nx1, ny1, nx2, ny2)
+                    elif blur_style == "emoji":
+                        result = app._apply_emoji(result, nx1, ny1, nx2, ny2)
+
+                    n_blurred += 1
+                    total_faces_blurred += 1
+
+                # Kaydet
+                fname = os.path.basename(item["path"])
+                out = os.path.join(self.output_dir, f"blurred_{fname}")
+                if out.lower().endswith((".jpg", ".jpeg")):
+                    result.save(out, quality=95)
+                else:
+                    result.save(out)
+
+                success += 1
+
+                # Kartı işlenmiş hale getir
+                def _show_done(itm=item, res=result, nb=n_blurred):
+                    itm["status_lbl"].configure(
+                        text=f"✅ Kaydedildi  ({nb} yüz bulanıklaştırıldı)",
+                        text_color="#2ECC71"
+                    )
+                    thumb = res.copy()
+                    thumb.thumbnail((self.THUMB_W, self.THUMB_H), Image.LANCZOS)
+                    photo = ImageTk.PhotoImage(thumb)
+                    itm["canvas"].delete("all")
+                    itm["canvas"].create_image(
+                        self.THUMB_W // 2, self.THUMB_H // 2,
+                        image=photo, anchor="center"
+                    )
+                    itm["canvas"].image = photo
+
+                self.after(0, _show_done)
+
+            except Exception as exc:
+                failed_names.append(os.path.basename(item["path"]))
+                err_txt = str(exc)[:45]
+                self.after(0, lambda s=item["status_lbl"], e=err_txt: s.configure(
+                    text=f"❌ Hata: {e}", text_color="#E74C3C"
+                ))
+
+        # Tamamlandı
+        def _on_done():
+            self.progress_bar.set(1.0)
+            self.detect_all_btn.configure(state="normal")
+            self.start_btn.configure(state="normal", text="✅ İşleme Başla")
+
+            msg = (
+                f"🎉 İşlem tamamlandı!\n\n"
+                f"Başarılı: {success} / {total}\n"
+                f"Bulanıklaştırılan yüz: {total_faces_blurred}\n"
+            )
+            if failed_names:
+                msg += "\nBaşarısız dosyalar:\n" + "\n".join(f"• {n}" for n in failed_names)
+            msg += f"\n\n📁 Çıktı klasörü:\n{self.output_dir}"
+
+            self.status_lbl.configure(
+                text=f"✅ Tamamlandı — {success}/{total} dosya işlendi."
+            )
+            messagebox.showinfo("Tamamlandı", msg)
+
+            if messagebox.askyesno("Klasörü Aç", "Çıktı klasörünü açmak ister misiniz?"):
+                import subprocess
+                if self.parent_app.system == "Windows":
+                    subprocess.run(["explorer", os.path.normpath(self.output_dir)])
+                elif self.parent_app.system == "Darwin":
+                    subprocess.run(["open", self.output_dir])
+                else:
+                    subprocess.run(["xdg-open", self.output_dir])
+
+        self.after(0, _on_done)
+
+
+
+
+# ============================================================
+# TOPLU İŞLEM — FOTOĞRAF DÜZENLEYİCİ
+# ============================================================
+class BatchImageEditorWindow(ctk.CTkToplevel):
+    """
+    BatchManagerWindow'daki bir fotoğrafı büyütülmüş olarak gösterir.
+    Yüz seçimi (tıklayarak) ve manuel elips çizimi desteklenir.
+    Değişiklikler 'Kaydet & Kapat' ile ana karta yansıtılır.
+    """
+
+    def __init__(self, batch_manager: "BatchManagerWindow", item: dict):
+        super().__init__(batch_manager)
+        self.bm = batch_manager          # BatchManagerWindow referansı
+        self.item = item                 # Ortak item dict (referans, kopya değil)
+        self.parent_app = batch_manager.parent_app
+
+        fname = Path(item["path"]).name
+        self.title(f"Düzenleyici — {fname}")
+        self.geometry("1100x750")
+        self.minsize(800, 550)
+        self.transient(batch_manager)
+        self.grab_set()
+
+        # --- Çalışma kopyaları (orijinal değişmesin) ---
+        self._face_locations: list = list(item["face_locations"])
+        self._selected_faces: list = list(item["selected_faces"])
+
+        # --- Canvas state ---
+        self._zoom = 1.0
+        self._pan_x = 0
+        self._pan_y = 0
+        self._display_scale = 1.0
+        self._offset_x = 0
+        self._offset_y = 0
+        self._is_panning = False
+        self._pan_sx = 0
+        self._pan_sy = 0
+
+        # --- Çizim modu ---
+        self._drawing = False
+        self._draw_sx: float | None = None
+        self._draw_sy: float | None = None
+        self._draw_rect_id = None
+
+        self._canvas_photo = None
+        self._canvas_img_id = None
+
+        self._build_ui()
+        self.after(100, self._refresh)
+
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
+    def _build_ui(self):
+        # ---- Üst araç çubuğu ----
+        toolbar = ctk.CTkFrame(self, height=55, corner_radius=0)
+        toolbar.pack(fill="x")
+        toolbar.pack_propagate(False)
+
+        ctk.CTkLabel(
+            toolbar, text=f"🔎 {Path(self.item['path']).name}",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(side="left", padx=12)
+
+        # Sağ butonlar
+        ctk.CTkButton(
+            toolbar, text="💾 Kaydet & Kapat", width=160, height=36,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#2D7D46", hover_color="#236B38",
+            command=self._save_and_close
+        ).pack(side="right", padx=8)
+
+        ctk.CTkButton(
+            toolbar, text="❌ İptal", width=90, height=36,
+            font=ctk.CTkFont(size=12),
+            fg_color="#E74C3C", hover_color="#C0392B",
+            command=self.destroy
+        ).pack(side="right", padx=4)
+
+        # Çizim modu butonu
+        self._draw_btn = ctk.CTkButton(
+            toolbar, text="✏️ Manuel Çizim: KAPALI", width=200, height=36,
+            font=ctk.CTkFont(size=12),
+            fg_color="#555555", hover_color="#444444",
+            command=self._toggle_draw_mode
+        )
+        self._draw_btn.pack(side="right", padx=8)
+
+        # Zoom butonları
+        for txt, cmd in [("➕", self._zoom_in), ("0", self._zoom_reset), ("➖", self._zoom_out)]:
+            ctk.CTkButton(
+                toolbar, text=txt, width=36, height=36,
+                font=ctk.CTkFont(size=14),
+                fg_color="gray40", hover_color="gray50",
+                command=cmd
+            ).pack(side="right", padx=1)
+
+        ctk.CTkLabel(toolbar, text="Zoom:", font=ctk.CTkFont(size=11)).pack(side="right", padx=4)
+
+        # ---- Ana içerik ----
+        content = ctk.CTkFrame(self, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=8, pady=8)
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_rowconfigure(0, weight=1)
+
+        # Canvas alanı
+        canvas_frame = ctk.CTkFrame(content, fg_color="gray15", corner_radius=10)
+        canvas_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        canvas_frame.grid_columnconfigure(0, weight=1)
+        canvas_frame.grid_rowconfigure(0, weight=1)
+
+        from tkinter import Canvas as TkCanvas
+        self._canvas = TkCanvas(canvas_frame, bg="#1e1e1e", highlightthickness=0, cursor="arrow")
+        self._canvas.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+
+        # Canvas olayları
+        self._canvas.bind("<ButtonPress-1>", self._on_press)
+        self._canvas.bind("<B1-Motion>", self._on_drag)
+        self._canvas.bind("<ButtonRelease-1>", self._on_release)
+        self._canvas.bind("<ButtonPress-3>", self._start_pan)
+        self._canvas.bind("<B3-Motion>", self._do_pan)
+        self._canvas.bind("<ButtonRelease-3>", self._stop_pan)
+        self._canvas.bind("<MouseWheel>", self._on_wheel)
+        self._canvas.bind("<Button-4>", self._on_wheel)
+        self._canvas.bind("<Button-5>", self._on_wheel)
+
+        # ---- Sağ panel: yüz listesi ----
+        right_panel = ctk.CTkFrame(content, width=220, fg_color="gray20", corner_radius=10)
+        right_panel.grid(row=0, column=1, sticky="nsew")
+        right_panel.grid_propagate(False)
+
+        ctk.CTkLabel(
+            right_panel, text="🎯 Yüz Listesi",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=(12, 4))
+
+        ctk.CTkLabel(
+            right_panel,
+            text="Tıklayarak seç/kaldır\nYeşil = Bulanıklaştırılacak",
+            font=ctk.CTkFont(size=10), text_color="gray"
+        ).pack(padx=8)
+
+        # Tümünü Seç / Kaldır
+        sel_frame = ctk.CTkFrame(right_panel, fg_color="transparent")
+        sel_frame.pack(fill="x", padx=8, pady=6)
+
+        ctk.CTkButton(
+            sel_frame, text="Tümünü Seç", height=26, width=92,
+            font=ctk.CTkFont(size=10),
+            fg_color="gray40", hover_color="gray50",
+            command=self._select_all
+        ).pack(side="left", padx=2)
+
+        ctk.CTkButton(
+            sel_frame, text="Tümünü Kaldır", height=26, width=92,
+            font=ctk.CTkFont(size=10),
+            fg_color="gray40", hover_color="gray50",
+            command=self._deselect_all
+        ).pack(side="left", padx=2)
+
+        # Yüz checkbox frame (scrollable)
+        self._cb_scroll = ctk.CTkScrollableFrame(right_panel, fg_color="transparent")
+        self._cb_scroll.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # Bilgi
+        ctk.CTkLabel(
+            right_panel,
+            text="💡 İpuçları:\n• Sağ tık sürükle = Pan\n• Tekerlek = Zoom\n• 0 tuşu = Zoom sıfırla",
+            font=ctk.CTkFont(size=9), text_color="gray", justify="left"
+        ).pack(padx=8, pady=8)
+
+        self._right_panel = right_panel
+        self._rebuild_face_list()
+
+        # ---- Alt durum çubuğu ----
+        self._status = ctk.CTkLabel(
+            self, text="Fotoğraf yükleniyor…",
+            font=ctk.CTkFont(size=11)
+        )
+        self._status.pack(pady=(0, 6))
+
+    # ------------------------------------------------------------------
+    # YÜZ LİSTESİ
+    # ------------------------------------------------------------------
+    def _rebuild_face_list(self):
+        for w in self._cb_scroll.winfo_children():
+            w.destroy()
+
+        if not self._face_locations:
+            ctk.CTkLabel(
+                self._cb_scroll,
+                text="Henüz yüz yok.\n✏️ Manuel çizim ile\nyüz ekleyebilirsiniz.",
+                font=ctk.CTkFont(size=11), text_color="gray", justify="center"
+            ).pack(pady=20)
+            return
+
+        for i, (x1, y1, x2, y2) in enumerate(self._face_locations):
+            row = ctk.CTkFrame(self._cb_scroll, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+
+            sel = i < len(self._selected_faces) and self._selected_faces[i]
+            var = ctk.BooleanVar(value=sel)
+
+            cb = ctk.CTkCheckBox(
+                row, text=f"Yüz #{i+1}",
+                variable=var,
+                font=ctk.CTkFont(size=11),
+                width=100,
+                command=lambda idx=i, v=var: self._on_cb(idx, v)
+            )
+            cb.pack(side="left")
+
+            ctk.CTkButton(
+                row, text="🗑️", width=30, height=24,
+                fg_color="#E74C3C", hover_color="#C0392B",
+                command=lambda idx=i: self._delete_face(idx)
+            ).pack(side="right", padx=2)
+
+    def _on_cb(self, index: int, var: ctk.BooleanVar):
+        while len(self._selected_faces) <= index:
+            self._selected_faces.append(True)
+        self._selected_faces[index] = var.get()
+        self._refresh()
+
+    def _delete_face(self, index: int):
+        if 0 <= index < len(self._face_locations):
+            del self._face_locations[index]
+            if index < len(self._selected_faces):
+                del self._selected_faces[index]
+        self._rebuild_face_list()
+        self._refresh()
+
+    def _select_all(self):
+        self._selected_faces = [True] * len(self._face_locations)
+        self._rebuild_face_list()
+        self._refresh()
+
+    def _deselect_all(self):
+        self._selected_faces = [False] * len(self._face_locations)
+        self._rebuild_face_list()
+        self._refresh()
+
+    # ------------------------------------------------------------------
+    # CANVAS ÇİZİMİ
+    # ------------------------------------------------------------------
+    def _refresh(self):
+        """Canvas'ı yeniden çiz."""
+        img = self.item["image"]
+        if img is None:
+            return
+
+        # Üzerine yüz kutucukları çizilmiş kopyası
+        preview = img.copy()
+        drw = ImageDraw.Draw(preview)
+        for i, (x1, y1, x2, y2) in enumerate(self._face_locations):
+            sel = i < len(self._selected_faces) and self._selected_faces[i]
+            color = "#00FF00" if sel else "#FF6B6B"
+            for t in range(4):
+                drw.ellipse([x1-t, y1-t, x2+t, y2+t], outline=color)
+            lx, ly = x1, max(0, y1 - 20)
+            drw.rectangle([lx, ly, lx + 36, ly + 18], fill=color)
+            drw.text((lx + 5, ly + 2), f"#{i+1}", fill="black")
+
+        self._display(preview)
+        n = len(self._face_locations)
+        sel_n = sum(1 for s in self._selected_faces if s)
+        self._status.configure(
+            text=f"🎭 {n} yüz  |  ✅ {sel_n} seçili  |  Zoom: {self._zoom:.1f}x  |  "
+                 f"{'✏️ Çizim Modu AÇIK' if self._drawing else 'Sağ tık = pan  •  Tekerlek = zoom'}"
+        )
+
+    def _display(self, pil_img: Image.Image):
+        self._canvas.update()
+        cw = self._canvas.winfo_width() or 800
+        ch = self._canvas.winfo_height() or 550
+        iw, ih = pil_img.size
+
+        base_scale = min(cw / iw, ch / ih) * 0.96
+        self._display_scale = base_scale * self._zoom
+        nw = int(iw * self._display_scale)
+        nh = int(ih * self._display_scale)
+
+        self._offset_x = (cw - nw) // 2 + self._pan_x
+        self._offset_y = (ch - nh) // 2 + self._pan_y
+
+        if nw < 1 or nh < 1:
+            return
+        resized = pil_img.resize((nw, nh), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(resized)
+        self._canvas_photo = photo  # referans koru
+
+        if self._canvas_img_id:
+            self._canvas.delete(self._canvas_img_id)
+        self._canvas_img_id = self._canvas.create_image(
+            self._offset_x, self._offset_y, image=photo, anchor="nw"
+        )
+
+    def _canvas_to_img(self, cx: float, cy: float):
+        """Canvas koordinatını orijinal görüntü koordinatına çevir."""
+        ix = (cx - self._offset_x) / self._display_scale
+        iy = (cy - self._offset_y) / self._display_scale
+        return ix, iy
+
+    # ------------------------------------------------------------------
+    # ZOOM & PAN
+    # ------------------------------------------------------------------
+    def _zoom_in(self):
+        self._zoom = min(self._zoom * 1.25, 10.0)
+        self._refresh()
+
+    def _zoom_out(self):
+        self._zoom = max(self._zoom / 1.25, 0.1)
+        self._refresh()
+
+    def _zoom_reset(self):
+        self._zoom = 1.0
+        self._pan_x = 0
+        self._pan_y = 0
+        self._refresh()
+
+    def _on_wheel(self, event):
+        if event.num == 4 or event.delta > 0:
+            self._zoom_in()
+        else:
+            self._zoom_out()
+
+    def _start_pan(self, event):
+        self._is_panning = True
+        self._pan_sx = event.x
+        self._pan_sy = event.y
+        self._canvas.configure(cursor="fleur")
+
+    def _do_pan(self, event):
+        if self._is_panning:
+            self._pan_x += event.x - self._pan_sx
+            self._pan_y += event.y - self._pan_sy
+            self._pan_sx = event.x
+            self._pan_sy = event.y
+            self._refresh()
+
+    def _stop_pan(self, event):
+        self._is_panning = False
+        self._canvas.configure(cursor="crosshair" if self._drawing else "arrow")
+
+    # ------------------------------------------------------------------
+    # MANUEL ÇİZİM
+    # ------------------------------------------------------------------
+    def _toggle_draw_mode(self):
+        self._drawing = not self._drawing
+        if self._drawing:
+            self._draw_btn.configure(
+                text="✏️ Manuel Çizim: AÇIK",
+                fg_color="#E74C3C", hover_color="#C0392B"
+            )
+            self._canvas.configure(cursor="crosshair")
+            self._status.configure(text="✏️ Fotoğraf üzerinde sürükleyerek yüz alanı çizin")
+        else:
+            self._draw_btn.configure(
+                text="✏️ Manuel Çizim: KAPALI",
+                fg_color="#555555", hover_color="#444444"
+            )
+            self._canvas.configure(cursor="arrow")
+            self._refresh()
+
+    def _on_press(self, event):
+        if not self._drawing:
+            # Tıklanan yüzü seç/kaldır
+            ix, iy = self._canvas_to_img(event.x, event.y)
+            for i in range(len(self._face_locations) - 1, -1, -1):
+                x1, y1, x2, y2 = self._face_locations[i]
+                pad = 10 / self._display_scale
+                if x1 - pad <= ix <= x2 + pad and y1 - pad <= iy <= y2 + pad:
+                    while len(self._selected_faces) <= i:
+                        self._selected_faces.append(True)
+                    self._selected_faces[i] = not self._selected_faces[i]
+                    self._rebuild_face_list()
+                    self._refresh()
+                    return
+            return
+
+        self._draw_sx = event.x
+        self._draw_sy = event.y
+        if self._draw_rect_id:
+            self._canvas.delete(self._draw_rect_id)
+
+    def _on_drag(self, event):
+        if not self._drawing or self._draw_sx is None:
+            return
+        if self._draw_rect_id:
+            self._canvas.delete(self._draw_rect_id)
+        self._draw_rect_id = self._canvas.create_oval(
+            self._draw_sx, self._draw_sy, event.x, event.y,
+            outline="#00FF00", width=2, dash=(5, 3)
+        )
+
+    def _on_release(self, event):
+        if not self._drawing or self._draw_sx is None:
+            return
+
+        dw = abs(event.x - self._draw_sx)
+        dh = abs(event.y - self._draw_sy)
+
+        if dw > 8 and dh > 8:
+            ix1, iy1 = self._canvas_to_img(self._draw_sx, self._draw_sy)
+            ix2, iy2 = self._canvas_to_img(event.x, event.y)
+            img_w, img_h = self.item["image"].size
+
+            xmin = int(max(0, min(ix1, ix2)))
+            ymin = int(max(0, min(iy1, iy2)))
+            xmax = int(min(img_w, max(ix1, ix2)))
+            ymax = int(min(img_h, max(iy1, iy2)))
+
+            if xmax > xmin and ymax > ymin:
+                self._face_locations.append((xmin, ymin, xmax, ymax))
+                self._selected_faces.append(True)
+                self._rebuild_face_list()
+                self._refresh()
+
+        if self._draw_rect_id:
+            self._canvas.delete(self._draw_rect_id)
+            self._draw_rect_id = None
+        self._draw_sx = None
+        self._draw_sy = None
+        # Çizim modundan otomatik çık (tek çizim = çık)
+        # İstenmiyorsa aşağıyı yoruma al:
+        # self._toggle_draw_mode()
+
+    # ------------------------------------------------------------------
+    # KAYDET & KAPAT
+    # ------------------------------------------------------------------
+    def _save_and_close(self):
+        """Değişiklikleri BatchManagerWindow'daki item'a yaz ve kapat."""
+        self.item["face_locations"] = list(self._face_locations)
+        self.item["selected_faces"] = list(self._selected_faces)
+
+        # Kartı güncelle
+        idx = self.item["index"]
+        self.bm._update_card(idx)
+
+        n = len(self._face_locations)
+        sel = sum(1 for s in self._selected_faces if s)
+        self.item["status_lbl"].configure(
+            text=f"🎭 {n} yüz  ({sel} seçili) — düzenlendi",
+            text_color="#3B8ED0"
+        )
+        self.destroy()
 
 
 def main():
