@@ -1,10 +1,10 @@
-name: Build and Release
+name: Build and Release v1.2
 
 on:
   push:
     tags:
-      - 'v*' # v1.0, v1.1 gibi tag atıldığında çalışır
-  workflow_dispatch: # Manuel olarak da tetiklenebilir
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -16,13 +16,10 @@ jobs:
         include:
           - os: windows-latest
             artifact_name: FaceBlur_Windows.exe
-            asset_name: FaceBlur_Windows
           - os: macos-latest
             artifact_name: FaceBlur_macOS
-            asset_name: FaceBlur_macOS
           - os: ubuntu-latest
             artifact_name: FaceBlur_Linux
-            asset_name: FaceBlur_Linux
 
     steps:
       - name: Checkout code
@@ -38,46 +35,53 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pyinstaller
 
       - name: Install Build Tools (Linux Only)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk
+          sudo apt-get install -y python3-tk libtk-img
 
-      - name: Build with PyInstaller (Windows)
-        if: runner.os == 'Windows'
+      - name: Build with PyInstaller
+        shell: bash
         run: |
-          pyinstaller --noconsole --onefile --name "Yüz Bulanıklaştırma" `
-          --add-data "blaze_face_short_range.tflite;." `
-          --add-data "haarcascade_frontalface_default.xml;." `
-          --collect-all customtkinter `
-          --icon="app_icon.ico" `
-          main.py
-
-
-      - name: Build with PyInstaller (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          pyinstaller --noconsole --onefile --name "Yüz_Bulanıklaştırma" \
-          --add-data "blaze_face_short_range.tflite:." \
-          --add-data "haarcascade_frontalface_default.xml:." \
+          # İşletim sistemine göre veri ayırıcıyı belirle (; windows, : unix)
+          SEP=":"
+          if [ "${{ runner.os }}" == "Windows" ]; then SEP=";"; fi
+          
+          pyinstaller --noconsole --onefile --name "YuzBulaniklastirma" \
+          --add-data "blaze_face_short_range.tflite${SEP}." \
+          --add-data "haarcascade_frontalface_default.xml${SEP}." \
+          --add-data "app_icon.ico${SEP}." \
           --collect-all customtkinter \
+          --collect-all tkinterdnd2 \
+          --collect-all mediapipe \
+          --hidden-import "PIL._tkinter_finder" \
+          --icon "app_icon.ico" \
           main.py
 
-      - name: Build with PyInstaller (Linux)
-        if: runner.os == 'Linux'
+      - name: Rename Artifact (macOS/Linux)
+        if: runner.os != 'Windows'
         run: |
-          pyinstaller --noconsole --onefile --name "Yüz_Bulanıklaştırma" \
-          --add-data "blaze_face_short_range.tflite:." \
-          --add-data "haarcascade_frontalface_default.xml:." \
-          --collect-all customtkinter \
-          main.py
-
+          mv dist/YuzBulaniklastirma dist/${{ matrix.artifact_name }}
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}
-          path: dist/Yüz*
+          name: ${{ matrix.artifact_name }}
+          path: |
+            dist/*.exe
+            dist/FaceBlur_macOS
+            dist/FaceBlur_Linux
 
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/*.exe
+            dist/FaceBlur_macOS
+            dist/FaceBlur_Linux
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
